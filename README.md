@@ -1,146 +1,141 @@
-# Remna Routing Updater
+# Remnawave Routing Updater
 
-Микросервис для автоматического обновления кастомного заголовка ответа `routing` в Remna панели при появлении новых данных в GitHub-репозитории [roscomvpn-happ-routing](https://github.com/hydraponique/roscomvpn-happ-routing).
+Безопасно синхронизирует Happ deeplink из GitHub с Remnawave. Основной режим
+обновляет заголовок `routing` только внутри выбранного Response Rule и не
+перезаписывает остальные правила или заголовки.
 
-## Как работает
+## Защитные проверки
 
-1. При запуске получает заголовок `routing` из настроек подписки и из настроек каждого настроенного внешнего сквада
-2. Проверяет файлы с роутингом на GitHub — по интервалу (`CHECK_INTERVAL`) или по расписанию (`CRON_SCHEDULE`)
-3. Если содержимое изменилось — отправляет новое содержимое заголовка `routing` в Remna
-4. Если изменений нет — ничего не делает
+Перед каждым PATCH сервис:
 
-Настройки подписки и каждый внешний сквад отслеживаются **независимо**: у каждого свой GitHub URL и свой кеш текущего роутинга. Изменение в одном не затрагивает остальные.
+1. загружает deeplink и декодирует Base64/JSON;
+2. проверяет обязательные поля и HTTPS-хосты геобаз;
+3. проверяет доступность `geoip.dat` и `geosite.dat`;
+4. повторно читает актуальные настройки Remnawave;
+5. требует увеличения `LastUpdated` и запрещает неожиданное переименование
+   профиля;
+6. сохраняет полную резервную копию текущих настроек;
+7. меняет только заголовок `routing`;
+8. повторно читает настройки и проверяет результат.
 
-## Быстрый старт
+По умолчанию включён `DRY_RUN=true`: сервис только показывает планируемое
+изменение.
+
+## Установка
 
 ```bash
-mkdir remna-routing-updater && cd remna-routing-updater
+git clone https://github.com/indie-master/Remnawave-Routing-update.git
+cd Remnawave-Routing-update
+cp .env.example .env
+nano .env
+mkdir -p backups
+docker compose up -d --build
+docker compose logs -f routing-updater
 ```
 
-### Внешняя панель (HTTPS)
-
-Создайте файл `.env`:
-
-```env
-REMNA_BASE_URL=https://your-host/api
-REMNA_TOKEN=your_bearer_token
-# GITHUB_RAW_URL=https://raw.githubusercontent.com/hydraponique/roscomvpn-happ-routing/refs/heads/main/HAPP/DEFAULT.DEEPLINK
-# CHECK_INTERVAL=300
-```
-
-Создайте файл `docker-compose.yml`:
-
-```yaml
-services:
-  routing-updater:
-    image: ghcr.io/lifeindarkside/remnawave-routing-update:latest
-    container_name: remna-routing-updater
-    restart: unless-stopped
-    env_file:
-      - .env
-```
-
-### Локальная панель (Docker)
-
-Если RemnaWave панель запущена локально в Docker (образ `remnawave/backend:latest`), контейнер updater нужно подключить к той же сети `remnawave-network` и обращаться к панели по имени контейнера.
-
-Создайте файл `.env`:
+Пример для локальной панели Remnawave:
 
 ```env
 REMNA_BASE_URL=http://remnawave:3000/api
-REMNA_TOKEN=your_bearer_token
-# GITHUB_RAW_URL=https://raw.githubusercontent.com/hydraponique/roscomvpn-happ-routing/refs/heads/main/HAPP/DEFAULT.DEEPLINK
-# CHECK_INTERVAL=300
+REMNA_TOKEN=replace_with_api_token
+
+UPDATE_TARGET=response-rule
+RESPONSE_RULE_NAME=Happ
+GITHUB_RAW_URL=https://raw.githubusercontent.com/indie-master/happ-routing/main/HAPP/DEFAULT.DEEPLINK
+
+DRY_RUN=true
+VALIDATE_GEO_URLS=true
+ALLOW_PROFILE_RENAME=false
+CRON_SCHEDULE=30 4 * * *
+TZ=UTC
 ```
 
-> `remnawave` — имя контейнера панели, `3000` — порт по умолчанию. Измените при необходимости.
+Контейнер подключается к существующей сети `remnawave-network`. Если панель
+имеет другое имя контейнера или порт, измените `REMNA_BASE_URL`.
 
-Создайте файл `docker-compose.yml`:
+## Canary-порядок
 
-```yaml
-services:
-  routing-updater:
-    image: ghcr.io/lifeindarkside/remnawave-routing-update:latest
-    container_name: remna-routing-updater
-    restart: unless-stopped
-    env_file:
-      - .env
-    networks:
-      - remnawave-network
+1. Создать отдельный Response Rule `Happ-canary` и назначить его только своей
+   тестовой подписке.
+2. В `.env` выбрать canary-правило и источник, оставив `DRY_RUN=true`:
 
-networks:
-  remnawave-network:
-    name: remnawave-network
-    external: true
-```
+   ```env
+   RESPONSE_RULE_NAME=Happ-canary
+   GITHUB_RAW_URL=https://raw.githubusercontent.com/indie-master/happ-routing/main/HAPP/CANARY.DEEPLINK
+   DRY_RUN=true
+   ```
 
-> Сеть `remnawave-network` должна уже существовать (создаётся docker-compose панели RemnaWave).
+3. Убедиться в логах, что профиль и обе базы проходят проверку.
+4. Разрешить смену имени, если тестовое правило было скопировано с production,
+   и включить запись:
 
-Запуск:
+   ```env
+   ALLOW_PROFILE_RENAME=true
+   DRY_RUN=false
+   ```
 
-```bash
-docker compose up -d
-```
+5. После клиентских тестов вернуть production-правило и источник:
 
-### Сборка из исходников
+   ```env
+   RESPONSE_RULE_NAME=Happ
+   GITHUB_RAW_URL=https://raw.githubusercontent.com/indie-master/happ-routing/main/HAPP/DEFAULT.DEEPLINK
+   ALLOW_PROFILE_RENAME=false
+   DRY_RUN=false
+   ```
 
-Если хотите собрать образ самостоятельно:
+6. Перезапустить только updater:
 
-```bash
-git clone https://github.com/lifeindarkside/Remnawave-Routing-update.git
-cd Remnawave-Routing-update
-cp .env.example .env
-# отредактируйте .env
-docker build -t remna-routing-updater .
-docker compose up -d
-```
+   ```bash
+   docker compose up -d --build routing-updater
+   docker compose logs --tail=100 routing-updater
+   ```
+
+Не направляйте `CANARY.DEEPLINK` на действующее правило `Happ` с
+`ALLOW_PROFILE_RENAME=false`: сервис намеренно отклонит смену имени
+`RoscomVPN` → `RoscomVPN-canary`.
 
 ## Переменные окружения
 
-| Переменная | Обязательная | По умолчанию | Описание |
-|---|---|---|---|
-| `REMNA_BASE_URL` | да | — | Базовый URL API Remna (например `https://host/api` или `http://remnawave:3000/api`) |
-| `REMNA_TOKEN` | да | — | Bearer-токен для авторизации в Remna API |
-| `GITHUB_RAW_URL` | нет | [DEFAULT.DEEPLINK](https://raw.githubusercontent.com/hydraponique/roscomvpn-happ-routing/refs/heads/main/HAPP/DEFAULT.DEEPLINK) | URL файла с роутингом для настроек подписки |
-| `CHECK_INTERVAL` | нет | `300` | Интервал проверки обновлений (в секундах), общий для всех |
-| `CRON_SCHEDULE` | нет | — | Запуск проверки по расписанию (cron-выражение, напр. `0 9 * * *`). Если задано — заменяет `CHECK_INTERVAL`. Время в часовом поясе контейнера (по умолчанию UTC) |
-| `SQUAD_N_UUID` | нет | — | UUID внешнего сквада (N = 1, 2, 3, ...) |
-| `SQUAD_N_URL` | нет | — | GitHub URL файла с роутингом для этого сквада |
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `REMNA_BASE_URL` | — | URL API, например `http://remnawave:3000/api` |
+| `REMNA_TOKEN` | — | Bearer-токен Remnawave |
+| `GITHUB_RAW_URL` | production deeplink | Источник профиля |
+| `UPDATE_TARGET` | `response-rule` | `response-rule` либо совместимый режим `global` |
+| `RESPONSE_RULE_NAME` | `Happ` | Точное имя изменяемого Response Rule |
+| `DRY_RUN` | `true` | Запретить фактический PATCH |
+| `VALIDATE_GEO_URLS` | `true` | Проверять обе базы перед обновлением |
+| `ALLOW_PROFILE_RENAME` | `false` | Разрешить изменение поля `Name` |
+| `ALLOWED_GEO_HOSTS` | jsDelivr, GitHub Raw, GitHub | Разрешённые хосты баз |
+| `CRON_SCHEDULE` | пусто | Cron вместо интервального опроса |
+| `CHECK_INTERVAL` | `21600` | Интервал без cron, минимум 60 секунд |
+| `REMNA_SSL_VERIFY` | `true` | Проверка TLS внешнего API Remnawave |
+| `BACKUP_DIR` | `/data/backups` | Каталог резервных копий |
+| `REQUEST_TIMEOUT` | `30` | HTTP timeout в секундах |
+| `SQUAD_N_UUID`, `SQUAD_N_URL` | пусто | Необязательные внешние сквады |
 
-### Режим запуска: интервал или расписание
+## Глобальный режим
 
-Сервис поддерживает два взаимоисключающих режима проверки:
-
-- **Интервал** (по умолчанию) — проверка каждые `CHECK_INTERVAL` секунд.
-- **Расписание** — если задан `CRON_SCHEDULE` (cron-выражение), проверка идёт по расписанию, а `CHECK_INTERVAL` игнорируется. Дополнительно одна проверка выполняется сразу при старте, чтобы не ждать первого срабатывания после рестарта или деплоя.
-
-**Зачем расписание.** Списки роутинга в [roscomvpn-happ-routing](https://github.com/hydraponique/roscomvpn-happ-routing) пересобираются примерно раз в сутки (автосборкой по утрам UTC). При интервале в 5 минут это ≈ 288 запросов к GitHub в сутки ради одного реального изменения. `CRON_SCHEDULE` позволяет синхронизироваться один раз — например, утром после пересборки — и сократить число запросов в сотни раз:
-
-```env
-# каждый день в 09:00 (часовой пояс контейнера, по умолчанию UTC)
-CRON_SCHEDULE=0 9 * * *
-```
-
-> Часовой пояс берётся из контейнера (по умолчанию UTC). Для другого пояса задайте переменную `TZ`, например `TZ=Europe/Moscow`.
-
-### Внешние сквады
-
-Для каждого сквада задаётся пара переменных с порядковым номером:
+Для старой схемы с `customResponseHeaders`:
 
 ```env
-SQUAD_1_UUID=your-first-squad-uuid-here
-SQUAD_1_URL=https://raw.githubusercontent.com/.../SQUAD1.DEEPLINK
-
-SQUAD_2_UUID=your-second-squad-uuid-here
-SQUAD_2_URL=https://raw.githubusercontent.com/.../SQUAD2.DEEPLINK
+UPDATE_TARGET=global
 ```
 
-Количество сквадов не ограничено. Если переменные не заданы — синхронизируются только настройки подписки.
+Даже в этом режиме сервис сохраняет все остальные глобальные заголовки.
 
-## Логи
+## Тесты
 
 ```bash
-docker compose logs -f
+pip install -r requirements.txt
+python -m unittest discover -s tests -v
+python -m py_compile app.py
+```
+
+При каждом push GitHub Actions запускает тесты и публикует контейнер:
+
+```text
+ghcr.io/indie-master/remnawave-routing-update:latest
 ```
 
 ## Лицензия
