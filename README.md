@@ -12,8 +12,8 @@
 2. проверяет обязательные поля и HTTPS-хосты геобаз;
 3. проверяет доступность `geoip.dat` и `geosite.dat`;
 4. повторно читает актуальные настройки Remnawave;
-5. требует увеличения `LastUpdated` и запрещает неожиданное переименование
-   профиля;
+5. требует увеличения `LastUpdated` и разрешает только явно заданные пары
+   переименования профиля;
 6. сохраняет полную резервную копию текущих настроек;
 7. меняет только заголовок `routing`;
 8. повторно читает настройки и проверяет результат.
@@ -46,6 +46,7 @@ GITHUB_RAW_URL=https://raw.githubusercontent.com/indie-master/happ-routing/main/
 DRY_RUN=true
 VALIDATE_GEO_URLS=true
 ALLOW_PROFILE_RENAME=false
+ALLOWED_PROFILE_RENAMES=RoscomVPN:swiftless-routing
 CRON_SCHEDULE=30 4 * * *
 TZ=UTC
 ```
@@ -66,11 +67,11 @@ TZ=UTC
    ```
 
 3. Убедиться в логах, что профиль и обе базы проходят проверку.
-4. Разрешить смену имени, если тестовое правило было скопировано с production,
-   и включить запись:
+4. Если тестовое правило скопировано с production, разрешить только конкретную
+   смену имени и включить запись:
 
    ```env
-   ALLOW_PROFILE_RENAME=true
+   ALLOWED_PROFILE_RENAMES=RoscomVPN:swiftless-routing-canary
    DRY_RUN=false
    ```
 
@@ -79,6 +80,7 @@ TZ=UTC
    ```env
    RESPONSE_RULE_NAME=Happ
    GITHUB_RAW_URL=https://raw.githubusercontent.com/indie-master/happ-routing/main/HAPP/DEFAULT.DEEPLINK
+   ALLOWED_PROFILE_RENAMES=RoscomVPN:swiftless-routing
    ALLOW_PROFILE_RENAME=false
    DRY_RUN=false
    ```
@@ -90,9 +92,9 @@ TZ=UTC
    docker compose logs --tail=100 routing-updater
    ```
 
-Не направляйте `CANARY.DEEPLINK` на действующее правило `Happ` с
-`ALLOW_PROFILE_RENAME=false`: сервис намеренно отклонит смену имени
-`RoscomVPN` → `RoscomVPN-canary`.
+Production deeplink использует `happ://routing/onadd/`, чтобы профиль с новым
+именем `swiftless-routing` стал активным после успешной загрузки геобаз. Общий
+переключатель `ALLOW_PROFILE_RENAME=true` для этой миграции не нужен.
 
 ## Переменные окружения
 
@@ -106,6 +108,7 @@ TZ=UTC
 | `DRY_RUN` | `true` | Запретить фактический PATCH |
 | `VALIDATE_GEO_URLS` | `true` | Проверять обе базы перед обновлением |
 | `ALLOW_PROFILE_RENAME` | `false` | Разрешить изменение поля `Name` |
+| `ALLOWED_PROFILE_RENAMES` | пусто | Разрешённые точные пары `старое:новое`, через запятую |
 | `ALLOWED_GEO_HOSTS` | jsDelivr, GitHub Raw, GitHub | Разрешённые хосты баз |
 | `CRON_SCHEDULE` | пусто | Cron вместо интервального опроса |
 | `CHECK_INTERVAL` | `21600` | Интервал без cron, минимум 60 секунд |

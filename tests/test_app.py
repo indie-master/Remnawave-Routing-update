@@ -4,12 +4,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app import (
     Config,
     build_settings_payload,
     current_settings_routing,
     decode_deeplink,
+    env_profile_renames,
     should_update,
 )
 
@@ -17,7 +19,7 @@ from app import (
 ALLOWED_HOSTS = frozenset({"cdn.jsdelivr.net"})
 
 
-def make_deeplink(timestamp=100, name="RoscomVPN"):
+def make_deeplink(timestamp=100, name="swiftless-routing", action="add"):
     profile = {
         "Name": name,
         "LastUpdated": str(timestamp),
@@ -31,7 +33,7 @@ def make_deeplink(timestamp=100, name="RoscomVPN"):
     encoded = base64.b64encode(
         json.dumps(profile, separators=(",", ":")).encode()
     ).decode()
-    return f"happ://routing/add/{encoded}", profile
+    return f"happ://routing/{action}/{encoded}", profile
 
 
 def make_config(tmpdir, target="response-rule"):
@@ -47,6 +49,7 @@ def make_config(tmpdir, target="response-rule"):
         dry_run=True,
         validate_geo_urls=True,
         allow_profile_rename=False,
+        allowed_profile_renames=frozenset(),
         backup_dir=Path(tmpdir),
         allowed_geo_hosts=ALLOWED_HOSTS,
         request_timeout=30,
@@ -55,8 +58,22 @@ def make_config(tmpdir, target="response-rule"):
 
 
 class DeeplinkTests(unittest.TestCase):
+    def test_profile_rename_allowlist_parser(self):
+        with patch.dict(
+            "os.environ",
+            {"ALLOWED_PROFILE_RENAMES": "RoscomVPN:swiftless-routing"},
+        ):
+            self.assertEqual(
+                env_profile_renames(),
+                frozenset({("RoscomVPN", "swiftless-routing")}),
+            )
+
     def test_valid_deeplink(self):
         deeplink, expected = make_deeplink()
+        self.assertEqual(decode_deeplink(deeplink, ALLOWED_HOSTS), expected)
+
+    def test_onadd_deeplink(self):
+        deeplink, expected = make_deeplink(action="onadd")
         self.assertEqual(decode_deeplink(deeplink, ALLOWED_HOSTS), expected)
 
     def test_disallowed_geodata_host(self):
@@ -80,6 +97,25 @@ class DeeplinkTests(unittest.TestCase):
         new, profile = make_deeplink(101, "Other")
         with self.assertRaisesRegex(ValueError, "Refusing profile rename"):
             should_update(old, new, profile, False, ALLOWED_HOSTS)
+
+    def test_only_explicit_profile_rename_is_allowed(self):
+        old, _ = make_deeplink(100, "RoscomVPN")
+        new, profile = make_deeplink(101, "swiftless-routing", action="onadd")
+        allowed = frozenset({("RoscomVPN", "swiftless-routing")})
+        self.assertTrue(
+            should_update(old, new, profile, False, ALLOWED_HOSTS, allowed)[0]
+        )
+
+        reverse, reverse_profile = make_deeplink(102, "RoscomVPN")
+        with self.assertRaisesRegex(ValueError, "Refusing profile rename"):
+            should_update(
+                new,
+                reverse,
+                reverse_profile,
+                False,
+                ALLOWED_HOSTS,
+                allowed,
+            )
 
 
 class ResponseRuleTests(unittest.TestCase):

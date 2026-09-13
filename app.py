@@ -26,7 +26,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 ROUTING_HEADER = "routing"
-DEEPLINK_RE = re.compile(r"^happ://routing/add/([A-Za-z0-9+/=]+)$")
+DEEPLINK_RE = re.compile(r"^happ://routing/(?:add|onadd)/([A-Za-z0-9+/=]+)$")
 DEFAULT_GITHUB_RAW_URL = (
     "https://raw.githubusercontent.com/indie-master/happ-routing/"
     "main/HAPP/DEFAULT.DEEPLINK"
@@ -43,6 +43,24 @@ def env_bool(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value")
+
+
+def env_profile_renames(
+    name: str = "ALLOWED_PROFILE_RENAMES",
+) -> frozenset[tuple[str, str]]:
+    result: set[tuple[str, str]] = set()
+    value = os.environ.get(name, "")
+    for raw in value.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if item.count(":") != 1:
+            raise ValueError(f"{name} entries must use old-name:new-name")
+        old_name, new_name = (part.strip() for part in item.split(":", 1))
+        if not old_name or not new_name or old_name == new_name:
+            raise ValueError(f"Invalid {name} entry: {item!r}")
+        result.add((old_name, new_name))
+    return frozenset(result)
 
 
 @dataclass(frozen=True)
@@ -64,6 +82,7 @@ class Config:
     dry_run: bool
     validate_geo_urls: bool
     allow_profile_rename: bool
+    allowed_profile_renames: frozenset[tuple[str, str]]
     backup_dir: Path
     allowed_geo_hosts: frozenset[str]
     request_timeout: int
@@ -130,6 +149,7 @@ class Config:
             dry_run=env_bool("DRY_RUN", True),
             validate_geo_urls=env_bool("VALIDATE_GEO_URLS", True),
             allow_profile_rename=env_bool("ALLOW_PROFILE_RENAME", False),
+            allowed_profile_renames=env_profile_renames(),
             backup_dir=Path(os.environ.get("BACKUP_DIR", "/data/backups")),
             allowed_geo_hosts=allowed_hosts,
             request_timeout=timeout,
@@ -401,6 +421,7 @@ def should_update(
     candidate: dict[str, Any],
     allow_profile_rename: bool,
     allowed_hosts: frozenset[str],
+    allowed_profile_renames: frozenset[tuple[str, str]] = frozenset(),
 ) -> tuple[bool, str]:
     if current_deeplink.strip() == candidate_deeplink.strip():
         return False, "routing is already current"
@@ -412,7 +433,12 @@ def should_update(
     except ValueError:
         return True, "current routing header is invalid and will be repaired"
 
-    if current["Name"] != candidate["Name"] and not allow_profile_rename:
+    rename = (str(current["Name"]), str(candidate["Name"]))
+    if (
+        current["Name"] != candidate["Name"]
+        and not allow_profile_rename
+        and rename not in allowed_profile_renames
+    ):
         raise ValueError(
             f"Refusing profile rename from {current['Name']!r} "
             f"to {candidate['Name']!r}"
@@ -456,6 +482,7 @@ def update_subscription_settings(
         profile,
         config.allow_profile_rename,
         config.allowed_geo_hosts,
+        config.allowed_profile_renames,
     )
     if not update:
         log.info("Subscription settings: %s", reason)
@@ -491,6 +518,7 @@ def update_squad(
         profile,
         config.allow_profile_rename,
         config.allowed_geo_hosts,
+        config.allowed_profile_renames,
     )
     if not update:
         log.info("Squad %s: %s", squad.uuid, reason)
